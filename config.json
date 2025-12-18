@@ -4,7 +4,6 @@
     "한화 지분 변동",
     "한화 최대주주 지분",
     "한화 특수관계인 지분",
-
     "한화에너지 지분",
     "한화임팩트 지분",
     "한화에어로스페이스 지분",
@@ -25,7 +24,6 @@
     "한화63시티 지분",
     "한화커넥트 지분",
     "한화푸드테크 지분",
-
     "한화생명 지분",
     "한화손해보험 지분",
     "한화투자증권 지분",
@@ -33,13 +31,11 @@
     "한화저축은행 지분",
     "한화생명금융서비스 지분",
     "캐롯손해보험 지분",
-
     "김승연 지분",
     "김동관 지분",
     "김동원 지분",
     "김동선 지분"
   ],
-
   "ALLOW_DOMAINS": [
     "news.naver.com",
     "n.news.naver.com",
@@ -49,20 +45,16 @@
     "www.mk.co.kr",
     "www.hankyung.com"
   ],
-
   "BLOCK_DOMAINS": [
     "sports.naver.com",
     "entertain.naver.com"
   ],
-
   "INCLUDE_TITLE_KEYWORDS": [
     "한화",
-
     "(주)한화",
     "㈜한화",
     "한화 글로벌부문",
     "한화 건설부문",
-
     "한화에너지",
     "한화임팩트",
     "한화에어로스페이스",
@@ -73,7 +65,6 @@
     "한화컴파운드",
     "한화토탈에너지스",
     "여천NCC",
-
     "한화오션",
     "한화엔진",
     "한화시스템",
@@ -82,7 +73,6 @@
     "한화모멘텀",
     "한화파워시스템",
     "한화로보틱스",
-
     "한화갤러리아",
     "한화호텔앤드리조트",
     "한화호텔&리조트",
@@ -92,7 +82,6 @@
     "한화푸드테크",
     "에프지코리아",
     "한화이글스",
-
     "한화생명",
     "한화손해보험",
     "한화투자증권",
@@ -100,7 +89,6 @@
     "한화저축은행",
     "한화생명금융서비스",
     "캐롯손해보험",
-
     "지분",
     "지분율",
     "보유지분",
@@ -117,7 +105,6 @@
     "자사주",
     "자기주식"
   ],
-
   "EXCLUDE_TITLE_KEYWORDS": [
     "야구",
     "축구",
@@ -137,11 +124,9 @@
     "장중",
     "마감"
   ],
-
   "EXCLUDE_TITLE_REGEX": [
     "(상속세|증여세|종부세|국세청)"
   ],
-
   "CONTEXT_REQUIRE_ANY": [
     "지분",
     "지분율",
@@ -159,7 +144,6 @@
     "자사주",
     "자기주식"
   ],
-
   "STRICT_AMBIGUOUS_TOKENS": [
     "매각",
     "처분",
@@ -168,22 +152,66 @@
     "대량매매",
     "지분"
   ],
-
   "SCHEDULE_MODE": "주기(분)",
   "INTERVAL_MIN": 60,
   "RECENCY_HOURS": 24,
   "CACHE_RETENTION_HOURS": 48,
-
   "ALLOWLIST_STRICT": false,
-  "NAVER_ALLOW_SIDS": ["101"],
-
+  "NAVER_ALLOW_SIDS": [
+    "101"
+  ],
   "USE_LLM_FILTER": false,
   "USE_LLM_DEDUP": false,
-
   "TELEGRAM_DISABLE_PREVIEW": true,
   "SHOW_SOURCE_DOMAIN": false,
   "NO_NEWS_SILENT": true,
-
   "MAX_PER_KEYWORD": 8,
-  "PAGE_SIZE": 30
+  "PAGE_SIZE": 30,
+  "KEYWORD_ALIASES": {
+    "지분매각": [
+      "블록딜",
+      "시간외매매",
+      "대량매매",
+      "장외매매",
+      "주식 처분",
+      "매각",
+      "sell-down"
+    ],
+    "지분변동": [
+      "지분율",
+      "보유지분",
+      "보유비율",
+      "지분 확대",
+      "지분 축소",
+      "변동",
+      "증감"
+    ],
+    "자사주": [
+      "자기주식",
+      "자기주식 취득",
+      "자기주식 처분",
+      "자사주 취득",
+      "자사주 처분"
+    ]
+  },
+  "ENTITY_WATCHLIST": [
+    "김승연",
+    "김동관",
+    "김동원",
+    "김동선",
+    "특수관계인",
+    "최대주주"
+  ],
+  "TRUSTED_SOURCES_FOR_FI": [
+    "news.naver.com",
+    "n.news.naver.com",
+    "www.thebell.co.kr",
+    "www.investchosun.com",
+    "dealsite.co.kr",
+    "www.mk.co.kr",
+    "www.hankyung.com"
+  ],
+  "LLM_MODEL": "gpt-4o-mini",
+  "LLM_CONF_THRESHOLD": 0.7,
+  "LLM_MAX_TOKENS": 400
 }

@@ -18,11 +18,11 @@ from threading import Lock
 # 기본 설정 / 전역 상태
 # -------------------------
 APP_TZ = pytz.timezone("Asia/Seoul")
-DEFAULT_CONFIG_PATH = os.getenv("PE_CFG", "config.json")
-CACHE_FILE = os.getenv("PE_SENT_CACHE", "sent_cache.json")  # 전송 이력 저장(중복 방지)
+DEFAULT_CONFIG_PATH = os.getenv("HANWHA_CFG", os.getenv("PE_CFG", "config.json"))
+CACHE_FILE = os.getenv("HANWHA_SENT_CACHE", os.getenv("PE_SENT_CACHE", "sent_cache.json"))  # 전송 이력 저장(중복 방지)
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("pe_monitor")
+log = logging.getLogger("hanwha_monitor")
 
 # 스케줄러 잡이 참조할 "현재" 구성/환경 (start_schedule()에서 갱신)
 CURRENT_CFG_PATH = DEFAULT_CONFIG_PATH
@@ -92,7 +92,7 @@ def _map_days_for_cron(days_ui: list[str]) -> str:
     return ",".join(mapped) if mapped else "*"
 
 def ensure_cron_job(sched: BackgroundScheduler, cfg: dict):
-    job_id = "pe_news_job"
+    job_id = "hanwha_news_job"
     try:
         sched.remove_job(job_id)
     except Exception:
@@ -107,7 +107,7 @@ def ensure_cron_job(sched: BackgroundScheduler, cfg: dict):
     )
 
 def ensure_interval_job(sched: BackgroundScheduler, minutes: int):
-    job_id = "pe_news_job"
+    job_id = "hanwha_news_job"
     try:
         sched.remove_job(job_id)
     except Exception:
@@ -511,23 +511,26 @@ def should_drop(item: dict, cfg: dict) -> bool:
             return True
 
     # -------------------------------
-    # 🔽 여기부터 수정/추가 부분
-    # -------------------------------
-    # PEF 맥락 필수 조건을 기본 적용하되,
-    # '신뢰 도메인 + 모호하지만 중요한 토큰(매각/공개매각/인수 등)'이면 LLM으로 넘기도록 우회 허용
+    # 🔽 한화 지분 모니터링용 맥락 필터
+    # - 기본적으로 CONTEXT_REQUIRE_ANY(지분/매각/최대주주/특수관계인/자사주 등) 중 하나는 있어야 통과
+    # - 다만 LLM 필터가 켜져 있으면(=2차에서 더 정밀 판단), 신뢰 도메인 또는 모호 토큰이 있을 때는 우회 허용
     context_any = cfg.get("CONTEXT_REQUIRE_ANY", []) or []
     context = (title + " " + item.get("description", "")).lower()
-
     has_context = any(k.lower() in context for k in context_any)
 
     trusted = set(cfg.get("TRUSTED_SOURCES_FOR_FI", cfg.get("ALLOW_DOMAINS", [])) or [])
     amb_tokens = set(t.lower() for t in (cfg.get("STRICT_AMBIGUOUS_TOKENS", []) or []))
     has_ambiguous = any(tok in title.lower() for tok in amb_tokens)
 
-    # 맥락 단어가 없다면 → (신뢰 도메인 AND 모호토큰)일 때만 통과시켜 LLM에서 판단
     if not has_context:
+        # LLM이 켜져 있으면 더 넓게 통과시켜 LLM에서 최종 판단(오탐은 LLM/임계치로 컷)
+        if bool(cfg.get("USE_LLM_FILTER", False)):
+            if src in trusted or has_ambiguous:
+                return False
+        # LLM이 꺼져 있으면 더 보수적으로: (신뢰 도메인 AND 모호토큰)일 때만 통과
         if not (src in trusted and has_ambiguous):
             return True
+
 
     return False
 
@@ -564,25 +567,33 @@ def _flatten_aliases(cfg: dict) -> List[str]:
 def _llm_prompt_for_item(item: dict, cfg: dict) -> str:
     kw = cfg.get("KEYWORDS", []) or []
     aliases = _flatten_aliases(cfg)
-    firms = cfg.get("FIRM_WATCHLIST", []) or []
+    entities = cfg.get("ENTITY_WATCHLIST", []) or []  # 선택: 오너일가/특수관계인/회사 약칭 등
     context_any = cfg.get("CONTEXT_REQUIRE_ANY", []) or []
     return f"""
-당신은 '국내 PE 동향' 관련 기사를 분류하는 전문가입니다.
-다음 기사가 사모펀드(PEF), GP/LP, 재무적 투자자(FI)의 투자·인수·매각·리파이낸싱 활동과 관련이 있거나,
-그들이 관여할 가능성이 높은 거래(M&A, 매각, 대형 자금조달, 공개매수)인지 판단하세요.
-단순 산업 내 전략적 인수나 일반 기업 인사·운영 보도는 제외합니다.
+당신은 '한화그룹(지주/계열사/자회사/특수관계인) 지분 변동·지분 매각/취득·대량매매·자사주·최대주주/특수관계인 관련' 기사를 분류하는 전문가입니다.
 
-판단 기준:
-- 핵심 키워드: {', '.join(kw)}
+다음 기사가 아래 주제와 '직접적으로' 관련이 있는지 판단하세요.
+- 지분율/보유비율 변동 (임원·주요주주·특수관계인 포함)
+- 주식 매각/취득 (블록딜/시간외/장외/대량매매 포함)
+- 자기주식(자사주) 취득·처분
+- 최대주주 변경/지배구조 변화
+- 관련 공시/규제/거래 구조(예: 보호예수 해제 후 매각, 특수관계인 거래)
+
+제외 대상:
+- 단순 실적/수주/제품/일반 경영/주가·차트·기술적 분석(지분 변동 언급 없음)
+- 스포츠/연예/인사/부고 등
+
+판단 기준 참고:
+- 검색 키워드: {', '.join(kw)}
 - 동의어: {', '.join(aliases)}
-- 운용사/FI 워치리스트: {', '.join(firms)}
+- (선택) 엔티티 워치리스트: {', '.join(entities)}
 - 맥락 키워드(있으면 강한 근거): {', '.join(context_any)}
 
 출력은 반드시 JSON 한 줄로 반환:
 {{
   "relevant": true|false,
   "confidence": 0.0~1.0,
-  "category": "PE deal"|"finance general"|"industry M&A"|"irrelevant",
+  "category": "equity_change"|"equity_sale_buy"|"treasury_stock"|"major_shareholder"|"governance"|"irrelevant",
   "matched": ["매칭된 단어들"],
   "reason": "한 줄 근거"
 }}
@@ -592,6 +603,7 @@ def _llm_prompt_for_item(item: dict, cfg: dict) -> str:
 - 출처: {domain_of(item.get('url',''))}
 - 링크: {item.get('url','')}
 """
+
 
 def _openai_chat(messages: List[Dict], api_key: str, model: str, max_tokens: int = 300, temperature: float = 0.0) -> str:
     url = "https://api.openai.com/v1/chat/completions"
@@ -622,11 +634,7 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
             user_prompt = _llm_prompt_for_item(it, cfg)
             messages = [
                 {"role": "system", "content":
-                    "You are a professional news classifier for Private Equity (KR). "
-                    "Classify only deals/events where a financial investor (PEF/GP/LP, co-invest, secondary, structured/NAV/pref-equity, PIPE, mezzanine, recap/refi) "
-                    "is involved or is plausibly involved. "
-                    "If a strategic investor (SI) conducts a pure industry M&A without FI involvement, mark relevant=false (category='industry M&A'). "
-                    "Return JSON only."
+                    "You are a professional news classifier for Hanwha Group equity/shareholding change news (KR). Return JSON only."
                 },
                 {"role": "user", "content": user_prompt},
             ]
@@ -641,12 +649,13 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
                     j = json.loads(m.group(0))
 
             # ✅ 완화된 조건: PE deal or finance general 둘 다 허용
-            cat = (j or {}).get("category", "").lower()
+            cat = str((j or {}).get("category", "")).strip().lower()
+            allowed = {"equity_change","equity_sale_buy","treasury_stock","major_shareholder","governance"}
             if (
                 isinstance(j, dict)
                 and j.get("relevant") is True
                 and float(j.get("confidence", 0.0)) >= conf_th
-                and cat in {"pe deal", "finance general"}
+                and cat in allowed
             ):
                 it["_llm"] = j
                 out.append(it)
@@ -802,7 +811,7 @@ def collect_all(cfg: dict, env: dict) -> List[dict]:
 def format_telegram_text(items: List[dict], cfg: dict = {} ) -> str:
     if not items:
         return "📭 신규 뉴스 없음"
-    lines = ["📌 <b>국내 PE 동향 관련 뉴스</b>"]
+    lines = ["🟠 <b>한화그룹 지분·지분변동 모니터링</b>"]
     for it in items:
         t = it.get("title", "").strip()
         u = it.get("url", "")
@@ -857,8 +866,7 @@ def transmit_once(cfg: dict, env: dict, preview=False) -> dict:
     try:
         all_items = collect_all(cfg, env)
         ranked = rank_filtered(all_items, cfg)  # 1차: 규칙 기반 필터
-        ranked = pe_focus_filter(ranked, cfg) # PE 선택 필터
-        ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
+ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
         ranked = llm_dedup_items(ranked, cfg, env)   # 3차: LLM 중복판정 (옵션) ← ✅ 여기 추가
 
         if preview:
@@ -927,7 +935,7 @@ def scheduled_job():
 def is_running(_: BackgroundScheduler = None) -> bool:
     try:
         sched = get_scheduler()
-        return any(j.id == "pe_news_job" for j in sched.get_jobs())
+        return any(j.id == "hanwha_news_job" for j in sched.get_jobs())
     except Exception:
         return False
 
@@ -949,41 +957,15 @@ def start_schedule(cfg_path: str, cfg_dict: dict, env: dict, minutes: int):
 def stop_schedule():
     sched = get_scheduler()
     try:
-        sched.remove_job("pe_news_job")
+        sched.remove_job("hanwha_news_job")
     except Exception:
         pass
 
-# ===== [Filter] 특정 PE 포커스 =====
-def pe_focus_filter(items: list[dict], cfg: dict) -> list[dict]:
-    """
-    cfg['PE_FOCUS']가 비어 있지 않으면, 제목/요약/본문에
-    해당 키워드(PE명)가 하나라도 포함된 기사만 통과시킵니다.
-    items: 각 원소는 {"title","summary","content","url",...}
-    """
-    focus = [s.strip() for s in cfg.get("PE_FOCUS", []) if isinstance(s, str) and s.strip()]
-    if not focus:
-        return items
-
-    def _hit(text: str) -> bool:
-        if not text:
-            return False
-        low = text.lower()
-        for kw in focus:
-            if kw.lower() in low:
-                return True
-        return False
-
-    out = []
-    for it in items:
-        text = f"{it.get('title','')} {it.get('summary','')} {it.get('content','')}"
-        if _hit(text):
-            out.append(it)
-    return out
 
 # -------------------------
 # Streamlit UI
 # -------------------------
-st.set_page_config(page_title="PE 동향 뉴스 모니터링", page_icon="📰", layout="wide")
+st.set_page_config(page_title="한화그룹 지분·지분변동 뉴스 모니터링", page_icon="🟠", layout="wide")
 
 # Config / 자격증명
 cfg_path = st.sidebar.text_input("config.json 경로", value=DEFAULT_CONFIG_PATH)
@@ -1062,26 +1044,14 @@ cfg["LLM_MODEL"] = st.sidebar.text_input("모델", value=cfg.get("LLM_MODEL", "g
 cfg["LLM_CONF_THRESHOLD"] = float(st.sidebar.slider("채택 임계치(신뢰도)", min_value=0.0, max_value=1.0, value=float(cfg.get("LLM_CONF_THRESHOLD", 0.7)), step=0.05))
 cfg["LLM_MAX_TOKENS"] = int(st.sidebar.number_input("max_tokens", min_value=64, max_value=1000, step=10, value=int(cfg.get("LLM_MAX_TOKENS", 300))))
 
-# ===== [UI] 특정 PE 선택 =====
-st.sidebar.subheader("🎯 특정 PE 선택(선택)")
-# 후보 목록은 config.json의 "PE_CANDIDATES"를 우선 사용, 없으면 아래 기본
-pe_candidates_default = [
-    "MBK", "IMM", "Hahn&Co", "VIG", "글랜우드", "베인", "KKR", "Carlyle", "한앤코",
-    "스틱", "H&Q", "브릿지", "JIP", "Affinity", "TPG", "KCGI", "한화", "맥쿼리"
-]
-pe_candidates = cfg.get("PE_CANDIDATES", pe_candidates_default)
-cfg["PE_FOCUS"] = st.sidebar.multiselect(
-    "특정 PE만 선별(비워두면 전체)",
-    options=pe_candidates,
-    default=cfg.get("PE_FOCUS", [])
 )
 
 st.sidebar.divider()
 if st.sidebar.button("구성 리로드", use_container_width=True):
     st.rerun()
 
-st.title("📰 국내 PE 동향 뉴스 자동 모니터링")
-st.caption("Streamlit + Naver/NewsAPI + OpenAI Filter + Telegram + APScheduler (Render + UptimeRobot)")
+st.title("🟠 한화그룹 지분·지분변동 뉴스 자동 모니터링")
+st.caption("Streamlit + Naver/NewsAPI + (선택) OpenAI Filter + Telegram + APScheduler")
 
 def make_env() -> dict:
     return {
