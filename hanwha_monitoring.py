@@ -636,12 +636,12 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
                     j = json.loads(m.group(0))
 
             # ✅ 완화된 조건: PE deal or finance general 둘 다 허용
-            cat = (j or {}).get("category", "").lower()
+            cat = (j or {}).get("category", "")
             if (
                 isinstance(j, dict)
                 and j.get("relevant") is True
                 and float(j.get("confidence", 0.0)) >= conf_th
-                and cat in {"pe deal", "finance general"}
+                and cat in {"equity_change", "equity_sale_buy", "treasury_stock", "major_shareholder", "governance"}
             ):
                 it["_llm"] = j
                 out.append(it)
