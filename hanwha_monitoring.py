@@ -866,7 +866,7 @@ def transmit_once(cfg: dict, env: dict, preview=False) -> dict:
     try:
         all_items = collect_all(cfg, env)
         ranked = rank_filtered(all_items, cfg)  # 1차: 규칙 기반 필터
-ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
+        ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
         ranked = llm_dedup_items(ranked, cfg, env)   # 3차: LLM 중복판정 (옵션) ← ✅ 여기 추가
 
         if preview:
