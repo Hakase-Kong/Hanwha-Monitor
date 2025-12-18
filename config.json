@@ -1,0 +1,47 @@
+{
+  "KEYWORDS": [
+    "한화 지분매각",
+    "한화 지분 변동",
+    "한화 최대주주 지분",
+    "한화 특수관계인 지분",
+    "한화 블록딜",
+    "한화 시간외매매",
+    "한화 자사주 처분",
+    "한화 오너일가 지분",
+    "한화 지배구조 지분"
+  ],
+  "KEYWORD_ALIASES": {
+    "지분매각": ["블록딜", "시간외매매", "대량매매", "장외매매", "주식 처분", "매각", "sell-down"],
+    "지분변동": ["지분율", "보유지분", "지분 확대", "지분 축소", "보유비율", "변동"]
+  },
+
+  "ALLOW_DOMAINS": ["news.naver.com", "n.news.naver.com", "www.thebell.co.kr", "www.investchosun.com", "dealsite.co.kr"],
+  "BLOCK_DOMAINS": ["sports.naver.com", "m.sports.naver.com"],
+
+  "INCLUDE_TITLE_KEYWORDS": [
+    "한화", "지분", "지분율", "지분변동", "매각", "처분", "블록딜", "시간외",
+    "최대주주", "특수관계인", "자사주", "대량매매", "주식매각", "지배구조"
+  ],
+  "EXCLUDE_TITLE_KEYWORDS": ["야구","축구","배구","농구","골프","연예","부고","부음","인사","승진","임명","발령","브랜드평판","주가","상한가","하한가","장중","마감"],
+  "EXCLUDE_TITLE_REGEX": ["(상속세|물납|종부세|국세청)"],
+
+  "CONTEXT_REQUIRE_ANY": [
+    "지분", "지분율", "주식", "매각", "처분", "블록딜", "시간외매매", "대량매매",
+    "최대주주", "특수관계인", "자기주식", "자사주", "보유", "변동", "공시"
+  ],
+  "STRICT_AMBIGUOUS_TOKENS": ["매각","처분","블록딜","시간외","대량매매","지분"],
+
+  "SCHEDULE_MODE": "주기(분)",
+  "INTERVAL_MIN": 60,
+  "RECENCY_HOURS": 24,
+  "CACHE_RETENTION_HOURS": 48,
+
+  "ALLOWLIST_STRICT": false,
+  "NAVER_ALLOW_SIDS": ["101"],
+
+  "TELEGRAM_DISABLE_PREVIEW": true,
+  "SHOW_SOURCE_DOMAIN": false,
+  "NO_NEWS_SILENT": true,
+  "MAX_PER_KEYWORD": 8,
+  "PAGE_SIZE": 30
+}
