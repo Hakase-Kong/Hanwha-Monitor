@@ -526,6 +526,8 @@ def should_drop(item: dict, cfg: dict) -> bool:
 
     # 맥락 단어가 없다면 → (신뢰 도메인 AND 모호토큰)일 때만 통과시켜 LLM에서 판단
     if not has_context:
+        if bool(cfg.get("USE_LLM_FILTER", False)):
+            return False  # LLM이 최종 판단
         if not (src in trusted and has_ambiguous):
             return True
 
