@@ -1030,8 +1030,6 @@ cfg["LLM_MODEL"] = st.sidebar.text_input("모델", value=cfg.get("LLM_MODEL", "g
 cfg["LLM_CONF_THRESHOLD"] = float(st.sidebar.slider("채택 임계치(신뢰도)", min_value=0.0, max_value=1.0, value=float(cfg.get("LLM_CONF_THRESHOLD", 0.7)), step=0.05))
 cfg["LLM_MAX_TOKENS"] = int(st.sidebar.number_input("max_tokens", min_value=64, max_value=1000, step=10, value=int(cfg.get("LLM_MAX_TOKENS", 300))))
 
-)
-
 st.sidebar.divider()
 if st.sidebar.button("구성 리로드", use_container_width=True):
     st.rerun()
