@@ -223,73 +223,43 @@ def save_sent_cache_v2(url_map: dict, story_map: dict) -> None:
     except Exception as e:
         log.warning("전송 캐시 저장 실패(v2): %s", e)
 
-def search_naver_news(
-    keyword: str,
-    client_id: str,
-    client_secret: str,
-    recency_hours: int = 72,
-    page_size: int = 30,
-    pages: int = 1,
-) -> List[dict]:
-    """
-    Naver News Search API.
-    - 기존 구현은 최신 1페이지(display)만 조회했는데, pages만큼 start를 증가시켜 더 많이 수집합니다.
-    - Naver API의 start는 1~1000, display는 10~100 범위입니다.
-    """
+def search_naver_news(keyword: str, client_id: str, client_secret: str, recency_hours=72, page_size: int = 30) -> List[dict]:
     if not client_id or not client_secret or not keyword:
         return []
     base = "https://openapi.naver.com/v1/search/news.json"
-    display = clamp(int(page_size), 10, 100)
-    pages = clamp(int(pages), 1, 10)  # 과도한 호출 방지(필요하면 늘리세요)
+    params = {"query": keyword, "display": clamp(int(page_size), 10, 100), "sort": "date"}
     headers = {
         "X-Naver-Client-Id": client_id,
         "X-Naver-Client-Secret": client_secret,
     }
-
-    cutoff = now_kst() - dt.timedelta(hours=int(recency_hours))
-    res: List[dict] = []
-
     try:
-        for p in range(pages):
-            start = 1 + p * display
-            # Naver API start는 1000 이하여야 함
-            if start > 1000:
-                break
-
-            params = {"query": keyword, "display": display, "start": start, "sort": "date"}
-            r = requests.get(base, params=params, headers=headers, timeout=12)
-            r.raise_for_status()
-            data = r.json()
-            items = data.get("items", []) or []
-            if not items:
-                break
-
-            for it in items:
-                link = it.get("link") or it.get("originallink") or ""
-                if not link:
-                    continue
-                pubdate = it.get("pubDate")
-                try:
-                    pub_kst = dt.datetime.strptime(pubdate, "%a, %d %b %Y %H:%M:%S %z")
-                except Exception:
-                    pub_kst = now_kst()
-
-                if pub_kst < cutoff:
-                    # 정렬이 date라서 이후 아이템은 더 과거일 확률이 높음 → 페이지 루프 종료
-                    break
-
-                title = re.sub("<.*?>", "", it.get("title") or "")
-                res.append({
-                    "title": title.strip(),
-                    "url": link.strip(),
-                    "source": domain_of(link),
-                    "publishedAt": pub_kst.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "origin_keyword": keyword,
-                    "provider": "naver",
-                })
-
+        r = requests.get(base, params=params, headers=headers, timeout=12)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("items", [])
+        res = []
+        cutoff = now_kst() - dt.timedelta(hours=recency_hours)
+        for it in items:
+            link = it.get("link") or it.get("originallink") or ""
+            if not link:
+                continue
+            pubdate = it.get("pubDate")
+            try:
+                pub_kst = dt.datetime.strptime(pubdate, "%a, %d %b %Y %H:%M:%S %z")
+            except Exception:
+                pub_kst = now_kst()
+            if pub_kst < cutoff:
+                continue
+            title = re.sub("<.*?>", "", it.get("title") or "")
+            res.append({
+                "title": title.strip(),
+                "url": link.strip(),
+                "source": domain_of(link),
+                "publishedAt": pub_kst.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "origin_keyword": keyword,
+                "provider": "naver",
+            })
         return res
-
     except Exception as e:
         log.warning("Naver 오류(%s): %s", keyword, e)
         return []
@@ -323,6 +293,7 @@ def search_newsapi(query: str, page_size: int, api_key: str, from_hours: int = 7
                 continue
             res.append({
                 "title": title,
+                "description": (a.get("description") or "").strip(),
                 "url": url,
                 "source": domain_of(url) or (a.get("source", {}) or {}).get("name", ""),
                 "publishedAt": (a.get("publishedAt") or "").replace(".000Z", "Z"),
@@ -630,6 +601,7 @@ def _llm_prompt_for_item(item: dict, cfg: dict) -> str:
 
 기사:
 - 제목: {item.get('title','')}
+- 요약: {item.get('description','')}
 - 출처: {domain_of(item.get('url',''))}
 - 링크: {item.get('url','')}
 """
@@ -678,16 +650,26 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
                 if m:
                     j = json.loads(m.group(0))
 
-            # ✅ 완화된 조건: PE deal or finance general 둘 다 허용
+            # ✅ 채택/제외 로직
+            # - 채택: relevant=True & confidence>=conf_th & category 허용
+            # - 강한 제외: relevant=False & confidence>=reject_th (그 외는 보수적으로 유지)
             cat = str((j or {}).get("category", "")).strip().lower()
+            conf = float((j or {}).get("confidence", 0.0) or 0.0)
+            relevant = bool((j or {}).get("relevant") is True)
             allowed = {"equity_change","equity_sale_buy","treasury_stock","major_shareholder","governance"}
-            if (
-                isinstance(j, dict)
-                and j.get("relevant") is True
-                and float(j.get("confidence", 0.0)) >= conf_th
-                and cat in allowed
-            ):
+
+            reject_th = float(cfg.get("LLM_REJECT_THRESHOLD", 0.85))
+
+            if relevant and conf >= conf_th and cat in allowed:
                 it["_llm"] = j
+                out.append(it)
+            else:
+                # 모델이 '확신'으로 irrelevant라고 할 때만 제외
+                if (not relevant) and conf >= reject_th:
+                    # drop
+                    continue
+                # 애매하면 규칙기반 결과를 유지(=드랍하지 않음)
+                it["_llm"] = j if isinstance(j, dict) else None
                 out.append(it)
 
         except Exception as e:
@@ -826,9 +808,7 @@ def collect_all(cfg: dict, env: dict) -> List[dict]:
     for kw in keywords:
         batch = search_naver_news(
             kw, env.get("NAVER_CLIENT_ID",""), env.get("NAVER_CLIENT_SECRET",""),
-            recency_hours=recency_hours,
-            page_size=int(cfg.get("PAGE_SIZE", 30)),
-            pages=int(cfg.get("NAVER_PAGES_PER_KEYWORD", 1)),
+            recency_hours=recency_hours, page_size=int(cfg.get("PAGE_SIZE", 30))
         )
         all_items += batch
     
@@ -898,7 +878,7 @@ def transmit_once(cfg: dict, env: dict, preview=False) -> dict:
     try:
         all_items = collect_all(cfg, env)
         ranked = rank_filtered(all_items, cfg)  # 1차: 규칙 기반 필터
-        ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
+ranked = llm_filter_items(ranked, cfg, env)  # 2차: LLM 필터 (옵션)
         ranked = llm_dedup_items(ranked, cfg, env)   # 3차: LLM 중복판정 (옵션) ← ✅ 여기 추가
 
         if preview:
@@ -1020,8 +1000,6 @@ st.sidebar.divider()
 st.sidebar.subheader("전송/수집 파라미터")
 cfg["PAGE_SIZE"] = int(st.sidebar.number_input("페이지당 수집 수", min_value=10, max_value=100, step=1, value=int(cfg.get("PAGE_SIZE", 30))))
 cfg["RECENCY_HOURS"] = int(st.sidebar.number_input("신선도(최근 N시간)", min_value=6, max_value=168, step=6, value=int(cfg.get("RECENCY_HOURS", 72))))
-cfg["NAVER_PAGES_PER_KEYWORD"] = int(st.sidebar.number_input("네이버 페이지 수(키워드당)", min_value=1, max_value=10, step=1, value=int(cfg.get("NAVER_PAGES_PER_KEYWORD", 1))))
-st.sidebar.caption("키워드당 1페이지(기본)→3페이지 이상으로 늘리면 더 많이 수집하지만 호출량이 늘어납니다.")
 
 # ✅ 시간 정책 토글
 st.sidebar.subheader("시간 정책")
@@ -1077,6 +1055,8 @@ cfg["USE_LLM_FILTER"] = bool(st.sidebar.checkbox("🤖 OpenAI로 2차 필터링"
 cfg["LLM_MODEL"] = st.sidebar.text_input("모델", value=cfg.get("LLM_MODEL", "gpt-4o-mini"))
 cfg["LLM_CONF_THRESHOLD"] = float(st.sidebar.slider("채택 임계치(신뢰도)", min_value=0.0, max_value=1.0, value=float(cfg.get("LLM_CONF_THRESHOLD", 0.7)), step=0.05))
 cfg["LLM_MAX_TOKENS"] = int(st.sidebar.number_input("max_tokens", min_value=64, max_value=1000, step=10, value=int(cfg.get("LLM_MAX_TOKENS", 300))))
+
+)
 
 st.sidebar.divider()
 if st.sidebar.button("구성 리로드", use_container_width=True):
