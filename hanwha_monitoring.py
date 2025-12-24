@@ -253,6 +253,7 @@ def search_naver_news(keyword: str, client_id: str, client_secret: str, recency_
             title = re.sub("<.*?>", "", it.get("title") or "")
             res.append({
                 "title": title.strip(),
+                "description": re.sub("<.*?>", "", it.get("description") or "").strip(),
                 "url": link.strip(),
                 "source": domain_of(link),
                 "publishedAt": pub_kst.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -582,6 +583,7 @@ def _llm_prompt_for_item(item: dict, cfg: dict) -> str:
 
 제외 대상:
 - 단순 실적/수주/제품/일반 경영/주가·차트·기술적 분석(지분 변동 언급 없음)
+- '주식부호/부자/자산가/재산순위/지분가치/포브스' 등 개인 자산·순위 기사(실제 지분변동 이벤트 없음)
 - 스포츠/연예/인사/부고 등
 
 판단 기준 참고:
@@ -617,6 +619,16 @@ def _openai_chat(messages: List[Dict], api_key: str, model: str, max_tokens: int
     return data["choices"][0]["message"]["content"]
 
 def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
+    """LLM 기반 2차 필터.
+
+    목적(한화 지분/지분변동 모니터링):
+      - '지분율/보유비율 변동', '주식 매각/취득(블록딜/시간외/장외 포함)', '자사주', '최대주주/특수관계인', '지배구조 변화'에
+        직접 관련된 기사만 남긴다.
+
+    동작 모드:
+      - LLM_STRICT_ONLY=true: LLM이 '관련'이라고 강하게 말한 것만 채택(그 외 전부 제외)  ← 정확도 우선
+      - LLM_STRICT_ONLY=false(기본): LLM이 '관련 아님'을 매우 확신하는 경우만 제외, 애매하면 유지  ← 리콜(누락 방지) 우선
+    """
     if not items:
         return items
     if not bool(cfg.get("USE_LLM_FILTER", False)):
@@ -628,15 +640,20 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
         return items
 
     model = cfg.get("LLM_MODEL", "gpt-4o-mini")
-    conf_th = float(cfg.get("LLM_CONF_THRESHOLD", 0.7))  # ✅ 완화
-    out = []
+    conf_th = float(cfg.get("LLM_CONF_THRESHOLD", 0.7))
+    reject_th = float(cfg.get("LLM_REJECT_THRESHOLD", 0.85))
+    strict_only = bool(cfg.get("LLM_STRICT_ONLY", True))  # ✅ 기본: '지분변동만'이라면 strict가 유리
+
+    allowed = {"equity_change","equity_sale_buy","treasury_stock","major_shareholder","governance"}
+    out: List[dict] = []
 
     for it in items:
         try:
             user_prompt = _llm_prompt_for_item(it, cfg)
             messages = [
                 {"role": "system", "content":
-                    "You are a professional news classifier for Hanwha Group equity/shareholding change news (KR). Return JSON only."
+                    "You are a professional news classifier for Hanwha Group shareholding/equity-change news in Korea. "
+                    "Return JSON only, strictly following the schema."
                 },
                 {"role": "user", "content": user_prompt},
             ]
@@ -645,39 +662,36 @@ def llm_filter_items(items: List[dict], cfg: dict, env: dict) -> List[dict]:
             try:
                 j = json.loads(resp.strip())
             except Exception:
-                import re as _re
-                m = _re.search(r"\{[\s\S]*\}$", resp.strip())
+                m = re.search(r"\{[\s\S]*\}$", resp.strip())
                 if m:
                     j = json.loads(m.group(0))
 
-            # ✅ 채택/제외 로직
-            # - 채택: relevant=True & confidence>=conf_th & category 허용
-            # - 강한 제외: relevant=False & confidence>=reject_th (그 외는 보수적으로 유지)
             cat = str((j or {}).get("category", "")).strip().lower()
             conf = float((j or {}).get("confidence", 0.0) or 0.0)
             relevant = bool((j or {}).get("relevant") is True)
-            allowed = {"equity_change","equity_sale_buy","treasury_stock","major_shareholder","governance"}
 
-            reject_th = float(cfg.get("LLM_REJECT_THRESHOLD", 0.85))
-
-            if relevant and conf >= conf_th and cat in allowed:
+            # 디버그용으로 항상 붙여둠(미리보기에서 확인 가능)
+            if isinstance(j, dict):
                 it["_llm"] = j
-                out.append(it)
-            else:
-                # 모델이 '확신'으로 irrelevant라고 할 때만 제외
-                if (not relevant) and conf >= reject_th:
-                    # drop
+
+            if strict_only:
+                # ✅ 관련 + 임계치 + 허용 카테고리만 남김 (그 외 제외)
+                if relevant and conf >= conf_th and cat in allowed:
+                    out.append(it)
+                else:
                     continue
-                # 애매하면 규칙기반 결과를 유지(=드랍하지 않음)
-                it["_llm"] = j if isinstance(j, dict) else None
+            else:
+                # 리콜 우선 모드: 모델이 '확신'으로 irrelevant라고 할 때만 제외
+                if (not relevant) and conf >= reject_th:
+                    continue
                 out.append(it)
 
         except Exception as e:
-            log.warning("LLM 필터 처리 실패: %s", e)
+            log.warning("LLM 필터 처리 실패(LLM 결과 유지): %s", e)
+            # 실패 시에는 누락을 피하기 위해 유지
             out.append(it)
 
     return out
-
 # -------------------------
 # LLM 기반 2차 중복 제거 (동일 기사/이슈 판정)
 # -------------------------
@@ -1055,6 +1069,8 @@ cfg["USE_LLM_FILTER"] = bool(st.sidebar.checkbox("🤖 OpenAI로 2차 필터링"
 cfg["LLM_MODEL"] = st.sidebar.text_input("모델", value=cfg.get("LLM_MODEL", "gpt-4o-mini"))
 cfg["LLM_CONF_THRESHOLD"] = float(st.sidebar.slider("채택 임계치(신뢰도)", min_value=0.0, max_value=1.0, value=float(cfg.get("LLM_CONF_THRESHOLD", 0.7)), step=0.05))
 cfg["LLM_MAX_TOKENS"] = int(st.sidebar.number_input("max_tokens", min_value=64, max_value=1000, step=10, value=int(cfg.get("LLM_MAX_TOKENS", 300))))
+
+)
 
 st.sidebar.divider()
 if st.sidebar.button("구성 리로드", use_container_width=True):
